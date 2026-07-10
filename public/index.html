@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Cabangile AI Studio</title>
+
+<link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+<header class="topbar">
+    <h1>🎬 Cabangile AI Studio</h1>
+
+    <div class="top-actions">
+        <button id="newProjectBtn">New Project</button>
+        <button id="saveProjectBtn">Save</button>
+        <button id="settingsBtn">Settings</button>
+    </div>
+</header>
+
+<main class="layout">
+
+    <aside class="sidebar">
+
+        <h2>Workspace</h2>
+
+        <button id="storyBtn">Story Writer</button>
+
+        <button id="screenplayBtn">Screenplay</button>
+
+        <button id="charactersBtn">Characters</button>
+
+        <button id="voiceBtn">AI Voices</button>
+
+        <button id="imagesBtn">Image Generator</button>
+
+        <button id="videoBtn">Video Generator</button>
+
+        <button id="timelineBtn">Timeline</button>
+
+        <button id="renderBtn">Render Movie</button>
+
+    </aside>
+
+    <section class="editor">
+
+        <h2>Project</h2>
+
+        <textarea id="storyInput"
+        placeholder="Type your movie idea here..."></textarea>
+
+        <div class="editor-buttons">
+
+            <button id="generateBtn">
+                Generate Story
+            </button>
+
+            <button id="clearBtn">
+                Clear
+            </button>
+
+        </div>
+
+        <div id="output">
+            Welcome to Cabangile AI Studio.
+        </div>
+
+    </section>
+
+</main>
+
+<footer>
+    Cabangile AI Studio © 2026
+</footer>
+
+<script type="module" src="js/main.js"></script>
+
+</body>
+</html> 
+
