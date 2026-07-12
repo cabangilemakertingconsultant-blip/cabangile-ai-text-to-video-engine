@@ -158,7 +158,7 @@ class ImageEngine:
         return lines
 
     def _load_system_font(self, size: int) -> ImageFont.ImageFont:
-        """FIXED: Scans common system pathways across Windows, Mac, and Linux systems."""
+        """Scans common system pathways across Windows, Mac, and Linux systems."""
         font_candidates = [
             "arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf", 
             "NotoSans-Regular.ttf", "Helvetica.ttf"
@@ -216,7 +216,7 @@ class FFmpegEngine:
         self._verify_dependencies()
 
     def _verify_dependencies(self) -> None:
-        """FIXED: Asserts execution platform holds proper pipeline utilities."""
+        """Asserts execution platform holds proper pipeline utilities."""
         for utility in ["ffmpeg", "ffprobe"]:
             if not shutil.which(utility):
                 raise RuntimeError(f"Missing core dependency system module: '{utility}' must be on your system PATH.")
@@ -260,7 +260,6 @@ class FFmpegEngine:
         return output_clip
 
     def concatenate_videos(self, clips: List[Path], output_path: Path) -> None:
-        # FIXED: Removed broken logger.init assignment bug
         logger.info("Merging scene sequences into global output target...")
         manifest_path = output_path.parent / "manifest.txt"
         
@@ -306,9 +305,28 @@ class VideoEngine:
         self.image_engine = ImageEngine()
         self.ffmpeg_engine = FFmpegEngine(fps=self.fps)
 
-    def generate(self, text_script: str, bg_music_path: Optional[str] = None, 
-                 progress_callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    def generate(
+        self, 
+        text_script: str, 
+        bg_music_path: Optional[str] = None, 
+        voice_language: Optional[str] = None,
+        fps: Optional[int] = None,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
+        """Runs the video generation pipeline with dynamic configuration parameter support."""
         start_time = datetime.datetime.now()
+        
+        # Handle hot runtime updates if API variables are supplied
+        if voice_language and voice_language != self.lang:
+            self.lang = voice_language
+            self.audio_engine = AudioEngine(language=self.lang)
+            logger.info(f"Runtime parameter update: Voice language changed to '{self.lang}'")
+
+        if fps and fps != self.fps:
+            self.fps = fps
+            self.ffmpeg_engine = FFmpegEngine(fps=self.fps)
+            logger.info(f"Runtime parameter update: Performance framerate target configured to {self.fps} FPS")
+
         workspace = self.pm.create_workspace()
         
         def report(msg: str) -> None:
@@ -378,4 +396,3 @@ class VideoEngine:
             "render_time": round(render_time, 2),
             "errors": errors
         }
-
