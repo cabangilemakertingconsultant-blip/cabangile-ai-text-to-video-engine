@@ -1,35 +1,64 @@
-"""Cabangile AI Video Generation API Server.
-
-Exposes the VideoEngine pipeline via a RESTful API with support for
-asynchronous background rendering tasks and job status tracking.
-"""
-
-import json
-import logging
 import os
-from pathlib import Path
-from typing import Dict, Optional
-from uuid import uuid4
-
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+import uuid
+import logging
+from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 
-# Import the existing pipeline components
-# Ensure your engine script is named 'video_engine.py' or update this import accordingly
+import uvicorn
+from fastapi import FastAPI, BackgroundTasks, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+
+# Cloudinary SDK imports
+import cloudinary
+import cloudinary.uploader
+
+# Import the video engine module
 from video_engine import VideoEngine
 
-# Setup Logging
-logger = logging.getLogger("CabangileAPI")
+# ==========================================
+# LOGGING CONFIGURATION
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("CabangileVideoAPI")
 
+# ==========================================
+# CLOUDINARY CONFIGURATION
+# ==========================================
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+
+# Conditional initialization to prevent errors if keys are absent
+CLOUDINARY_READY = False
+if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True
+    )
+    CLOUDINARY_READY = True
+    logger.info("Cloudinary CDN configuration successfully initialized.")
+else:
+    logger.warning(
+        "Cloudinary environment variables are missing! "
+        "Uploads will be skipped, falling back to local file storage only."
+    )
+
+# ==========================================
+# FASTAPI & CORSMIDDLEWARE SETUP
+# ==========================================
 app = FastAPI(
-    title="Cabangile AI Video API",
-    description="Backend API server for managing text-to-video processing pipelines.",
-    version="1.0.0"
+    title="Cabangile AI Video Studio API",
+    description="Production API server for asynchronous AI video generation and Cloudinary hosting.",
+    version="1.0.0",
 )
 
-# Enable CORS for frontend integration (e.g., live index.html testing)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,125 +67,210 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory database to store job state updates
-# For production, replace this with Redis or a proper SQL database
-JOBS_DB: Dict[str, Dict] = {}
+# ==========================================
+# IN-MEMORY DATABASE
+# ==========================================
+JOBS_DB: Dict[str, Dict[str, Any]] = {}
 
+# ==========================================
+# PYDANTIC SCHEMAS (REQUEST / RESPONSE)
+# ==========================================
+class VideoGenerationRequest(BaseModel):
+    prompt: str = Field(..., description="Text prompt or script for the video generation.")
+    bg_music_path: Optional[str] = Field(None, description="Optional path to a background music file.")
 
-# --- Request/Response Schemas ---
-
-class VideoRequest(BaseModel):
-    script: str = Field(..., description="The double-newline separated text script for the scenes.")
-    bg_music_path: Optional[str] = Field(None, description="Absolute path to an optional background audio file.")
-    fps: int = Field(30, ge=15, le=60, description="Frames per second for output video compilation.")
-    voice_language: str = Field("en", description="gTTS ISO 639-1 language matching layout profile.")
-
+class VideoGenerationResponse(BaseModel):
+    job_id: str = Field(..., description="Unique identifier for the asynchronous generation task.")
+    status: str = Field(..., description="Current status of the job (pending, processing).")
+    message: str = Field(..., description="Initial status confirmation message.")
 
 class JobStatusResponse(BaseModel):
     job_id: str
-    status: str
-    progress_message: str
-    result: Optional[dict] = None
+    status: str = Field(..., description="Current status: pending, processing, completed, failed.")
+    progress_message: str = Field(..., description="Human-readable updates regarding the engine status.")
+    result: Optional[Dict[str, Any]] = Field(None, description="Output payload containing file paths and asset URLs.")
 
-
-# --- Background Worker Core Task ---
-
-def run_video_generation(job_id: str, request_data: VideoRequest):
-    """Executes the VideoEngine generation loop inside an isolated background worker thread."""
+# ==========================================
+# BACKGROUND WORKER TASK
+# ==========================================
+def background_video_render(job_id: str, prompt: str, bg_music_path: Optional[str] = None) -> None:
+    """
+    Executes the VideoEngine generation loop, performs safety validations,
+    attempts to upload the final asset to Cloudinary, and cleans up local storage.
+    """
+    logger.info(f"Starting background job {job_id}")
     JOBS_DB[job_id]["status"] = "processing"
-    
-    def api_progress_callback(message: str) -> None:
-        logger.info(f"[Job {job_id}]: {message}")
-        JOBS_DB[job_id]["progress_message"] = message
+    JOBS_DB[job_id]["progress_message"] = "Initializing VideoEngine pipeline..."
+
+    local_output_path = None
 
     try:
-        engine = VideoEngine(config={
-            "fps": request_data.fps,
-            "voice_language": request_data.voice_language,
-            "output_directory": "output"
-        })
+        # 1. Trigger Video Generation via Engine
+        engine = VideoEngine()
+        JOBS_DB[job_id]["progress_message"] = "Rendering video frames and assembling audio..."
         
-        # Execute structural video compilation
-        results = engine.generate(
-            text_script=request_data.script,
-            bg_music_path=request_data.bg_music_path,
-            progress_callback=api_progress_callback
+        engine_result = engine.generate(
+            text_script=prompt,
+            bg_music_path=bg_music_path,
+            progress_callback=None
         )
+
+        # 2. Parse Engine Output Dictionary
+        if not engine_result or not engine_result.get("success"):
+            errors = engine_result.get("errors", ["Unknown engine processing error"])
+            raise RuntimeError(f"VideoEngine failed pipeline generation: {', '.join(errors)}")
+
+        local_output_path = engine_result.get("output_path")
+
+        # Verify Local Output exists on disk
+        if not local_output_path or not os.path.exists(local_output_path):
+            raise FileNotFoundError(f"VideoEngine reported success, but file was missing at: {local_output_path}")
+
+        logger.info(f"Job {job_id} successfully rendered locally at {local_output_path}")
         
-        if results.get("success"):
-            JOBS_DB[job_id]["status"] = "completed"
-            JOBS_DB[job_id]["progress_message"] = "Video generated successfully!"
-            JOBS_DB[job_id]["result"] = results
+        # Prepare the base completion state
+        JOBS_DB[job_id]["status"] = "completed"
+        JOBS_DB[job_id]["result"] = {
+            "local_path": local_output_path,
+            "cloudinary_url": None,
+            "upload_error": None,
+            "metadata": {
+                "duration": engine_result.get("duration"),
+                "total_scenes": engine_result.get("total_scenes"),
+                "render_time": engine_result.get("render_time")
+            }
+        }
+
+        # 3. Cloudinary Upload & Disk Cleanup Logic
+        if CLOUDINARY_READY:
+            JOBS_DB[job_id]["progress_message"] = "Video rendered. Uploading to Cloudinary CDN..."
+            try:
+                upload_result = cloudinary.uploader.upload(
+                    local_output_path,
+                    public_id=f"cabangile_job_{job_id}",
+                    resource_type="video",
+                    overwrite=True
+                )
+                secure_url = upload_result.get("secure_url")
+                JOBS_DB[job_id]["result"]["cloudinary_url"] = secure_url
+                JOBS_DB[job_id]["progress_message"] = "Job completed successfully. Asset fully hosted."
+                logger.info(f"Job {job_id} successfully hosted on Cloudinary: {secure_url}")
+                
+                # Cleanup disk space now that CDN safely holds the file
+                try:
+                    os.remove(local_output_path)
+                    JOBS_DB[job_id]["result"]["local_path"] = None  # Clear path since file is deleted
+                    logger.info(f"Cleaned up local file to preserve space: {local_output_path}")
+                except OSError as os_err:
+                    logger.warning(f"Failed to remove local file {local_output_path}: {str(os_err)}")
+
+            except Exception as cloud_err:
+                error_msg = f"Cloudinary upload failed: {str(cloud_err)}"
+                logger.error(f"Job {job_id} completed rendering but failed CDN upload: {error_msg}")
+                JOBS_DB[job_id]["result"]["upload_error"] = error_msg
+                JOBS_DB[job_id]["progress_message"] = (
+                    "Job completed with upload errors. File retained locally for direct download."
+                )
         else:
-            JOBS_DB[job_id]["status"] = "failed"
-            JOBS_DB[job_id]["progress_message"] = "Pipeline execution error."
-            JOBS_DB[job_id]["result"] = results
-            
-    except Exception as e:
-        logger.error(f"Background task failure for job {job_id}: {e}", exc_info=True)
+            JOBS_DB[job_id]["progress_message"] = (
+                "Job completed. Cloudinary skipped (missing configs). File available via direct download."
+            )
+
+    except Exception as exc:
+        logger.error(f"Fatal error executing job {job_id}: {str(exc)}", exc_info=True)
         JOBS_DB[job_id]["status"] = "failed"
-        JOBS_DB[job_id]["progress_message"] = f"Fatal pipeline crash: {str(e)}"
+        JOBS_DB[job_id]["progress_message"] = f"Generation failed: {str(exc)}"
+        JOBS_DB[job_id]["result"] = {"error_details": str(exc)}
 
-
-# --- REST API Routing Endpoints ---
-
-@app.post("/api/video/generate", status_code=status.HTTP_202_ACCEPTED, response_model=JobStatusResponse)
-async def generate_video(payload: VideoRequest, background_tasks: BackgroundTasks):
-    """Submits a script processing job payload into the asynchronous generation worker pool."""
-    job_id = f"task_{uuid4().hex[:12]}"
+# ==========================================
+# REST ENDPOINTS
+# ==========================================
+@app.post(
+    "/api/video/generate", 
+    response_model=VideoGenerationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Trigger asynchronous video generation"
+)
+async def generate_video(payload: VideoGenerationRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
     
-    # Initialize state configuration layout footprint inside volatile dictionary storage structures
     JOBS_DB[job_id] = {
         "job_id": job_id,
-        "status": "queued",
-        "progress_message": "Job successfully received and queued.",
+        "status": "pending",
+        "progress_message": "Job queued. Waiting to spin up engine thread.",
         "result": None
     }
     
-    # Push the pipeline runtime target frame context loop array cleanly onto FastAPI background tasks threads
-    background_tasks.add_task(run_video_generation, job_id, payload)
+    background_tasks.add_task(
+        background_video_render,
+        job_id=job_id,
+        prompt=payload.prompt,
+        bg_music_path=payload.bg_music_path
+    )
     
-    return JOBS_DB[job_id]
-
-
-@app.get("/api/video/status/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
-    """Retrieves current processing operational execution statuses for tracked engine pipelines."""
-    if job_id not in JOBS_DB:
-        raise HTTPException(status_code=404, detail="Requested generation task target profile index not found.")
-    return JOBS_DB[job_id]
-
-
-@app.get("/api/video/download/{job_id}")
-async def download_video(job_id: str):
-    """Streams compiled static output MP4 binary video assets back down out of the host filesystem blocks."""
-    if job_id not in JOBS_DB:
-        raise HTTPException(status_code=404, detail="Job entry signature record invalid.")
-        
-    job = JOBS_DB[job_id]
-    if job["status"] != "completed" or not job["result"]:
-        raise HTTPException(status_code=400, detail="The requested media output pipeline target is not compiled.")
-        
-    video_file_path = job["result"].get("output_path")
-    if not video_file_path or not Path(video_file_path).exists():
-        raise HTTPException(status_code=404, detail="Target binary file container missing off physical disk volumes.")
-        
-    return FileResponse(
-        path=video_file_path, 
-        media_type="video/mp4", 
-        filename=Path(video_file_path).name
+    logger.info(f"Accepted video generation request. Job ID assigned: {job_id}")
+    return VideoGenerationResponse(
+        job_id=job_id,
+        status="pending",
+        message="Video generation has been successfully offloaded to background threads."
     )
 
+@app.get(
+    "/api/video/status/{job_id}", 
+    response_model=JobStatusResponse,
+    summary="Check video generation job status"
+)
+async def get_job_status(job_id: str):
+    job = JOBS_DB.get(job_id)
+    if not job:
+        logger.warning(f"Status requested for non-existent job ID: {job_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail=f"Job sequence reference '{job_id}' could not be located."
+        )
+    return job
+
+@app.get(
+    "/api/video/download/{job_id}", 
+    summary="Download rendered video asset from local disk"
+)
+async def download_video(job_id: str):
+    job = JOBS_DB.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Job sequence reference could not be located."
+        )
+        
+    if job.get("status") != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"Resource is not ready for retrieval. Current state is: {job.get('status')}"
+        )
+        
+    result = job.get("result", {})
+    local_path = result.get("local_path")
+    
+    if not local_path or not os.path.exists(local_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="The requested file asset is no longer stored locally on this instance."
+        )
+        
+    logger.info(f"Serving local binary file stream for job {job_id}")
+    return FileResponse(
+        path=local_path, 
+        media_type="video/mp4", 
+        filename=f"cabangile_{job_id}.mp4"
+    )
 
 if __name__ == "__main__":
-    import uvicorn
-
-    # Fallback to port 8000 if Render's environment variable is not set locally
     port = int(os.environ.get("PORT", 8000))
-
-    # Binding to 0.0.0.0 allows the container/instance to accept external routing
+    logger.info(f"Bootstrapping Cabangile AI Video Studio API on port {port}")
+    
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
         port=port,
+        reload=False
     )
