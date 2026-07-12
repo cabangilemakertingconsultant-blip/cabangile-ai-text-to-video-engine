@@ -6,6 +6,7 @@ asynchronous background rendering tasks and job status tracking.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Optional
 from uuid import uuid4
@@ -149,5 +150,13 @@ async def download_video(job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    # Start ASGI application servers on generic developer loop ports mapping targets
-    uvicorn.run("api_server:app", host="127.0.0.1", port=8000, reload=True)
+
+    # Fallback to port 8000 if Render's environment variable is not set locally
+    port = int(os.environ.get("PORT", 8000))
+
+    # Binding to 0.0.0.0 allows the container/instance to accept external routing
+    uvicorn.run(
+        "api_server:app",
+        host="0.0.0.0",
+        port=port,
+    )
