@@ -727,20 +727,24 @@
 
         /**
          * Assets Verification Routine before exposing player architecture
-         * Optimized with a fast HEAD request to verify presence without downloading
+         * Uses regular GET request to support standard asset availability validation
          */
         async function verifyAndExposeAsset(jobId) {
             updateMonitor("processing", "Checking final file integrity metrics...", 95);
             const downloadUrl = `${API_BASE}/api/video/download/${jobId}`;
             
             try {
-                // Optimized Asset Check (Uses HEAD instead of GET)
-                const headCheck = await fetch(downloadUrl, { method: 'HEAD' });
+                // Changed from HEAD to standard GET to stay compatible with API capabilities
+                const assetCheck = await fetch(downloadUrl);
                 
-                if (headCheck.status === 404) {
+                if (assetCheck.status === 404) {
                     liveMessage.innerText = "Video is still finalizing... holding pipeline locks.";
                     setTimeout(() => verifyAndExposeAsset(jobId), 3000);
                     return;
+                }
+                
+                if (!assetCheck.ok) {
+                    throw new Error(`Asset target check returned non-success response code: ${assetCheck.status}`);
                 }
                 
                 // Final UI completion update trigger
@@ -776,7 +780,7 @@
                 regenerateBtn.removeAttribute('disabled');
 
             } catch (err) {
-                handleFailure("Failed verification step when communicating file system assets location parameters.");
+                handleFailure(`Failed verification step when communicating file system assets: ${err.message}`);
                 setGeneratingState(false);
             }
         }
