@@ -1,4 +1,8 @@
-fastapi==0.99.1
-uvicorn==0.51.0
-gTTS==2.5.4
-Pillow==12.3.0
+fastapi
+uvicorn
+pydantic
+pillow
+gTTS
+cloudinary
+python-multipart
+requests
