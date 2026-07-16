@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght=300;400;500;600;700&display=swap');
         body {
             font-family: 'Plus Jakarta Sans', sans-serif;
             background-color: #0b0f19;
@@ -50,6 +50,12 @@
                     <textarea id="script" name="script" rows="5" required
                         class="w-full bg-gray-950/80 border border-gray-800 rounded-xl p-3.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-gray-600"
                         placeholder="Write your video scene script or generation cues here..."></textarea>
+                    
+                    <button type="button" id="gemini-btn"
+                        class="w-full mt-3 bg-violet-600 hover:bg-violet-500 text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        Generate Script with Gemini
+                    </button>
                 </div>
 
                 <div class="space-y-2">
@@ -167,7 +173,7 @@
                     </div>
                 </div>
 
-                <div id="state-error" class="hidden flex flex-col items-center justify-center text-center py-12 space-y-3">
+                <div id="state-error" class="hidden flex-col items-center justify-center text-center py-12 space-y-3">
                     <div class="h-16 w-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-500">
                         <i class="fa-solid fa-triangle-exclamation text-2xl animate-bounce"></i>
                     </div>
@@ -212,6 +218,10 @@
         const fpsInput = document.getElementById('fps');
         const fpsValText = document.getElementById('fps-val');
         const backendStatus = document.getElementById('backend-status');
+        
+        // Gemini Selectors
+        const geminiBtn = document.getElementById('gemini-btn');
+        const scriptBox = document.getElementById('script');
 
         const stateIdle = document.getElementById('state-idle');
         const stateProcessing = document.getElementById('state-processing');
@@ -264,6 +274,43 @@
             else if (state === 'error') stateError.classList.remove('hidden');
             else if (state === 'completed') stateCompleted.classList.remove('hidden');
         }
+
+        // Gemini AI Script Generator
+        geminiBtn.addEventListener('click', async () => {
+            const prompt = scriptBox.value.trim();
+
+            if (!prompt) {
+                alert("Please enter a basic concept or video idea in the box first so Gemini has something to work with!");
+                return;
+            }
+
+            geminiBtn.disabled = true;
+            geminiBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Gemini Thinking...';
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || "Gemini script engine returned an error.");
+                }
+
+                scriptBox.value = data.response;
+
+            } catch (error) {
+                alert(error.message);
+            } finally {
+                geminiBtn.disabled = false;
+                geminiBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate Script with Gemini';
+            }
+        });
 
         // Form Submit -> Start Generation
         form.addEventListener('submit', async (e) => {

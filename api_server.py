@@ -22,6 +22,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl, Field, ConfigDict
 
+# Import Gemini provider as requested
+from providers.gemini_provider import GeminiProvider
+
 # ==============================================================================
 # CONSTANTS & DIRECTORY SETUP
 # ==============================================================================
@@ -38,6 +41,9 @@ LOGS_DIR = BASE_DIR / "logs"
 # Ensure runtime directories exist securely
 for directory in (OUTPUT_DIR, TEMP_DIR, LOGS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
+
+# Create global instance of the Gemini provider
+gemini = GeminiProvider()
 
 # ==============================================================================
 # LOGGING CONFIGURATION (PREVENTING DUPLICATES)
@@ -123,6 +129,11 @@ class VideoGenerateRequest(BaseModel):
             }
         }
     )
+
+
+class GeminiRequest(BaseModel):
+    prompt: str
+
 
 # ==============================================================================
 # STATE MANAGEMENT
@@ -335,6 +346,25 @@ async def download_video(job_id: str):
         media_type="video/mp4",
         filename=f"cabangile_{job_id}.mp4"
     )
+
+
+@app.post("/api/gemini/generate")
+async def generate_with_gemini(request: GeminiRequest):
+    """
+    Handles prompt generation offloaded to the integrated GeminiProvider.
+    """
+    try:
+        response = gemini.generate(request.prompt)
+        return {
+            "success": True,
+            "response": response
+        }
+    except Exception as e:
+        logger.error(f"Gemini generation failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 # ==============================================================================
 # SERVICE EXECUTION INTERFACE
